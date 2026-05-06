@@ -29,9 +29,7 @@ Globals:
       - !Ref DependenciesLayer
 
 Resources:
-  # ----------------------------------------------------------------
-  # Lambda Layer (shared dependencies)
-  # ----------------------------------------------------------------
+  # Lambda Layer
   DependenciesLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
@@ -41,9 +39,7 @@ Resources:
     Metadata:
       BuildMethod: python3.11
 
-  # ----------------------------------------------------------------
   # DynamoDB Tables
-  # ----------------------------------------------------------------
   MatchesTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -117,18 +113,14 @@ Resources:
           Projection:
             ProjectionType: ALL
 
-  # ----------------------------------------------------------------
   # SNS Topic
-  # ----------------------------------------------------------------
   PredictionResultsTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Sub "spt-results-${Environment}"
       DisplayName: Sports Predictions Results
 
-  # ----------------------------------------------------------------
   # API Gateway
-  # ----------------------------------------------------------------
   PredictionsApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -139,9 +131,7 @@ Resources:
         AllowHeaders: "'Content-Type,Authorization'"
         AllowOrigin: "'*'"
 
-  # ----------------------------------------------------------------
   # Lambda Functions
-  # ----------------------------------------------------------------
   CreateUserFunction:
     Type: AWS::Serverless::Function
     Properties:
