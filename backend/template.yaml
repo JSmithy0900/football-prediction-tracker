@@ -1,0 +1,306 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Sports Predictions Tracker - Premier League
+
+Parameters:
+  FootballApiKey:
+    Type: String
+    Description: API key for Football-Data.org
+    NoEcho: true
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        MATCHES_TABLE: !Ref MatchesTable
+        PREDICTIONS_TABLE: !Ref PredictionsTable
+        USERS_TABLE: !Ref UsersTable
+        FOOTBALL_API_KEY: !Ref FootballApiKey
+        SNS_TOPIC_ARN: !Ref PredictionResultsTopic
+        ENVIRONMENT: !Ref Environment
+    Layers:
+      - !Ref DependenciesLayer
+
+Resources:
+  # ----------------------------------------------------------------
+  # Lambda Layer (shared dependencies)
+  # ----------------------------------------------------------------
+  DependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "spt-deps-${Environment}"
+      ContentUri: dependencies/
+      CompatibleRuntimes: [python3.11]
+    Metadata:
+      BuildMethod: python3.11
+
+  # ----------------------------------------------------------------
+  # DynamoDB Tables
+  # ----------------------------------------------------------------
+  MatchesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "spt-matches-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: matchId
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: kickoff
+          AttributeType: S
+      KeySchema:
+        - AttributeName: matchId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: StatusIndex
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: kickoff
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  PredictionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "spt-predictions-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: matchId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: matchId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: MatchIndex
+          KeySchema:
+            - AttributeName: matchId
+              KeyType: HASH
+            - AttributeName: userId
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "spt-users-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: username
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UsernameIndex
+          KeySchema:
+            - AttributeName: username
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  # ----------------------------------------------------------------
+  # SNS Topic
+  # ----------------------------------------------------------------
+  PredictionResultsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "spt-results-${Environment}"
+      DisplayName: Sports Predictions Results
+
+  # ----------------------------------------------------------------
+  # API Gateway
+  # ----------------------------------------------------------------
+  PredictionsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "spt-api-${Environment}"
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+
+  # ----------------------------------------------------------------
+  # Lambda Functions
+  # ----------------------------------------------------------------
+  CreateUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "spt-create-user-${Environment}"
+      CodeUri: src/
+      Handler: handlers.users.create_user
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PredictionsApi
+            Path: /users
+            Method: POST
+
+  GetUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "spt-get-user-${Environment}"
+      CodeUri: src/
+      Handler: handlers.users.get_user
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PredictionsApi
+            Path: /users/{userId}
+            Method: GET
+
+  GetFixturesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "spt-get-fixtures-${Environment}"
+      CodeUri: src/
+      Handler: handlers.fixtures.get_fixtures
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MatchesTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PredictionsApi
+            Path: /fixtures
+            Method: GET
+
+  SyncFixturesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "spt-sync-fixtures-${Environment}"
+      CodeUri: src/
+      Handler: handlers.fixtures.sync_fixtures
+      Timeout: 60
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MatchesTable
+      Events:
+        DailySync:
+          Type: Schedule
+          Properties:
+            Schedule: rate(12 hours)
+            Name: !Sub "spt-daily-fixture-sync-${Environment}"
+            Description: Sync upcoming PL fixtures from Football-Data.org
+
+  CreatePredictionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "spt-create-prediction-${Environment}"
+      CodeUri: src/
+      Handler: handlers.predictions.create_prediction
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PredictionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref MatchesTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PredictionsApi
+            Path: /predictions
+            Method: POST
+
+  GetPredictionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "spt-get-predictions-${Environment}"
+      CodeUri: src/
+      Handler: handlers.predictions.get_predictions
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref PredictionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref MatchesTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PredictionsApi
+            Path: /predictions
+            Method: GET
+
+  GetLeaderboardFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "spt-get-leaderboard-${Environment}"
+      CodeUri: src/
+      Handler: handlers.leaderboard.get_leaderboard
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PredictionsApi
+            Path: /leaderboard
+            Method: GET
+
+  FetchResultsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "spt-fetch-results-${Environment}"
+      CodeUri: src/
+      Handler: handlers.fetch_results.fetch_and_score
+      Timeout: 300
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MatchesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PredictionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt PredictionResultsTopic.TopicName
+      Events:
+        HourlySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Name: !Sub "spt-hourly-results-${Environment}"
+            Description: Fetch match results and score predictions hourly
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${PredictionsApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+    Export:
+      Name: !Sub "spt-api-url-${Environment}"
+
+  PredictionResultsTopicArn:
+    Description: SNS Topic ARN for results notifications
+    Value: !Ref PredictionResultsTopic
+    Export:
+      Name: !Sub "spt-results-topic-${Environment}"
