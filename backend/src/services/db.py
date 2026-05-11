@@ -3,26 +3,35 @@ import boto3
 from boto3.dynamodb.conditions import Key, Attr
 
 
-dynamodb = boto3.resource("dynamodb")
+def _table(env_key):
+    return boto3.resource("dynamodb").Table(os.environ[env_key])
 
-matches_table = dynamodb.Table(os.environ["MATCHES_TABLE"])
-predictions_table = dynamodb.Table(os.environ["PREDICTIONS_TABLE"])
-users_table = dynamodb.Table(os.environ["USERS_TABLE"])
+
+def _matches():
+    return _table("MATCHES_TABLE")
+
+
+def _predictions():
+    return _table("PREDICTIONS_TABLE")
+
+
+def _users():
+    return _table("USERS_TABLE")
 
 
 # Matches
 
 def get_match(match_id):
-    resp = matches_table.get_item(Key={"matchId": match_id})
+    resp = _matches().get_item(Key={"matchId": match_id})
     return resp.get("Item")
 
 
 def put_match(item):
-    matches_table.put_item(Item=item)
+    _matches().put_item(Item=item)
 
 
 def get_matches_by_status(status):
-    resp = matches_table.query(
+    resp = _matches().query(
         IndexName="StatusIndex",
         KeyConditionExpression=Key("status").eq(status),
     )
@@ -30,7 +39,7 @@ def get_matches_by_status(status):
 
 
 def update_match_result(match_id, home_score, away_score, status):
-    matches_table.update_item(
+    _matches().update_item(
         Key={"matchId": match_id},
         UpdateExpression="SET homeScore = :h, awayScore = :a, #s = :s",
         ExpressionAttributeNames={"#s": "status"},
@@ -41,23 +50,23 @@ def update_match_result(match_id, home_score, away_score, status):
 # Predictions
 
 def get_prediction(user_id, match_id):
-    resp = predictions_table.get_item(Key={"userId": user_id, "matchId": match_id})
+    resp = _predictions().get_item(Key={"userId": user_id, "matchId": match_id})
     return resp.get("Item")
 
 
 def put_prediction(item):
-    predictions_table.put_item(Item=item)
+    _predictions().put_item(Item=item)
 
 
 def get_predictions_for_user(user_id):
-    resp = predictions_table.query(
+    resp = _predictions().query(
         KeyConditionExpression=Key("userId").eq(user_id),
     )
     return resp.get("Items", [])
 
 
 def get_predictions_for_match(match_id):
-    resp = predictions_table.query(
+    resp = _predictions().query(
         IndexName="MatchIndex",
         KeyConditionExpression=Key("matchId").eq(match_id),
     )
@@ -65,7 +74,7 @@ def get_predictions_for_match(match_id):
 
 
 def update_prediction_score(user_id, match_id, points, status):
-    predictions_table.update_item(
+    _predictions().update_item(
         Key={"userId": user_id, "matchId": match_id},
         UpdateExpression="SET points = :p, #s = :s",
         ExpressionAttributeNames={"#s": "status"},
@@ -76,12 +85,12 @@ def update_prediction_score(user_id, match_id, points, status):
 # Users
 
 def get_user(user_id):
-    resp = users_table.get_item(Key={"userId": user_id})
+    resp = _users().get_item(Key={"userId": user_id})
     return resp.get("Item")
 
 
 def get_user_by_username(username):
-    resp = users_table.query(
+    resp = _users().query(
         IndexName="UsernameIndex",
         KeyConditionExpression=Key("username").eq(username),
     )
@@ -90,19 +99,19 @@ def get_user_by_username(username):
 
 
 def put_user(item):
-    users_table.put_item(Item=item)
+    _users().put_item(Item=item)
 
 
 def increment_user_points(user_id, points):
-    users_table.update_item(
+    _users().update_item(
         Key={"userId": user_id},
-        UpdateExpression="ADD totalPoints :p, totalPredictions :one SET leaderboardPartition = :lp",
-        ExpressionAttributeValues={":p": points, ":one": 1, ":lp": "ALL"},
+        UpdateExpression="ADD totalPoints :p, totalPredictions :one",
+        ExpressionAttributeValues={":p": points, ":one": 1},
     )
 
 
 def get_all_users_ranked():
-    resp = users_table.scan(
+    resp = _users().scan(
         FilterExpression=Attr("totalPoints").exists(),
     )
     users = resp.get("Items", [])
